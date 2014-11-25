@@ -35,6 +35,9 @@ type Part struct {
 	// hidden from this map and the body is transparently decoded
 	// during Read calls.
 	Header textproto.MIMEHeader
+    // RawBody contains the raw bytes of the message, including all the headers
+    // in their pristine form
+	RawBody []byte
 
 	buffer    *bytes.Buffer
 	mr        *Reader
@@ -95,7 +98,18 @@ func NewReader(reader io.Reader, boundary string) *Reader {
 	}
 }
 
+func extractRawBody(mr *Reader, buffer []byte) ([]byte, error) {
+    idx := bytes.Index(buffer, mr.nlDashBoundary)
+    if idx == -1 {
+        return nil, fmt.Errorf("boundary not found")
+    }
+    return buffer[0:idx], nil
+}
+
 func newPart(mr *Reader) (*Part, error) {
+    ccopy := bytes.NewBuffer(nil)
+	mr.bufReader = bufio.NewReader(io.TeeReader(mr.bufReader, ccopy))
+
 	bp := &Part{
 		Header: make(map[string][]string),
 		mr:     mr,
@@ -104,6 +118,17 @@ func newPart(mr *Reader) (*Part, error) {
 	if err := bp.populateHeaders(); err != nil {
 		return nil, err
 	}
+
+    // extract the raw body, this works because `populateHeaders` consume all
+    // the input, so ccopy is a complete copy of the original Reader
+    // If this behavior will change in the future, we most likely postpone
+    // the RawBody to the complete read of `bp`
+    raw, err := extractRawBody(mr, ccopy.Bytes())
+	if err != nil {
+		return nil, err
+    }
+    bp.RawBody = raw
+
 	bp.r = partReader{bp}
 	const cte = "Content-Transfer-Encoding"
 	if bp.Header.Get(cte) == "quoted-printable" {
